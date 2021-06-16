@@ -1,0 +1,91 @@
+image: java:8
+services:
+  - docker:dind
+
+stages:
+  - build
+  - package
+  - deploy
+
+gradle-build:
+  stage: build
+  script:
+    - cd Software_Code
+    - ./gradlew build --debug
+  artifacts:
+    paths:
+      - Software_Code/backend/build/libs/*.jar
+
+docker-build:
+  image: docker:latest
+  stage: package
+  before_script:
+    - docker info
+    - cp Software_Code/backend/build/libs/*.jar .
+  script:
+    - docker login -u "gitlab-ci-token" -p "$CI_BUILD_TOKEN" registry.gitlab.com
+    - docker build -f Software_Code/docker/Dockerfile -t registry.gitlab.com/alkajo/agile7:${CI_COMMIT_REF_SLUG} .
+    - docker push registry.gitlab.com/alkajo/agile7:${CI_COMMIT_REF_SLUG}
+
+deploy_staging:
+  stage: deploy
+  image: kroniak/ssh-client:3.6
+  script:
+    # add the server as a known host
+    - mkdir ~/.ssh
+    - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    # add ssh key stored in SSH_PRIVATE_KEY variable to the agent store
+    - eval $(ssh-agent -s)
+    - ssh-add <(echo "$SSH_PRIVATE_KEY")
+    # log into Docker registry
+    - ssh deployer@chibbi.kahli.eu "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN registry.gitlab.com"
+    # stop container, remove image.
+    - ssh deployer@chibbi.kahli.eu "docker stack rm agile7_${CI_COMMIT_REF_SLUG}" || true
+    - sleep 10
+    - ssh deployer@chibbi.kahli.eu "docker rm agile7_${CI_COMMIT_REF_SLUG}" || true
+    - ssh deployer@chibbi.kahli.eu "docker rmi registry.gitlab.com/alkajo/r:${CI_COMMIT_REF_SLUG}" || true
+
+    #log in server copy docker stack file
+    - ssh deployer@chibbi.kahli.eu "if [ -d "~/${CI_COMMIT_REF_SLUG}" ]; then rm -Rf ~/${CI_COMMIT_REF_SLUG}; fi"
+    - ssh deployer@chibbi.kahli.eu "mkdir ~/${CI_COMMIT_REF_SLUG} && cd ~/${CI_COMMIT_REF_SLUG} && mkdir db"
+    - scp -pr Software_Code/docker deployer@chibbi.kahli.eu:~/${CI_COMMIT_REF_SLUG}
+    - ssh deployer@chibbi.kahli.eu "docker pull registry.gitlab.com/alkajo/agile7:${CI_COMMIT_REF_SLUG}" || true
+    # start new container
+    - ssh deployer@chibbi.kahli.eu "cd ~/${CI_COMMIT_REF_SLUG}/docker && REF=${CI_COMMIT_REF_SLUG} docker stack deploy --compose-file docker-compose.yml agile7_${CI_COMMIT_REF_SLUG}"
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    url: https://${CI_COMMIT_REF_SLUG}.kahli.eu
+    on_stop: stop_staging
+  only:
+    - branches
+
+stop_staging:
+  stage: deploy
+  image: kroniak/ssh-client:3.6
+  variables:
+    GIT_STRATEGY: none
+  script:
+    # add the server as a known host
+    - mkdir ~/.ssh
+    - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    # add ssh key stored in SSH_PRIVATE_KEY variable to the agent store
+    - eval $(ssh-agent -s)
+    - ssh-add <(echo "$SSH_PRIVATE_KEY")
+    # log into Docker registry
+    - ssh deployer@chibbi.kahli.eu "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN registry.gitlab.com"
+    # stop container, remove image.
+    - ssh deployer@chibbi.kahli.eu "docker stack rm agile7_${CI_COMMIT_REF_SLUG}" || true
+    - sleep 10
+    - ssh deployer@chibbi.kahli.eu "if [ -d "~/${CI_COMMIT_REF_SLUG}" ]; then rm -Rf ~/${CI_COMMIT_REF_SLUG}; fi"
+    - ssh deployer@chibbi.kahli.eu "docker rm agile7_${CI_COMMIT_REF_SLUG}" || true
+    - ssh deployer@chibbi.kahli.eu "docker rmi registry.gitlab.com/alkajo/agile7:${CI_COMMIT_REF_SLUG}" || true
+  when: manual
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    action: stop
+  only:
+    - branches
+  except:
+    - master

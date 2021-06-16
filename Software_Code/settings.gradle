@@ -1,0 +1,2 @@
+rootProject.name = 'agile7'
+include 'backend', 'frontend'

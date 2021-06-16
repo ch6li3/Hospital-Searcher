@@ -1,0 +1,16 @@
+version: '3'
+services:
+  agile:
+    image: registry.gitlab.com/alkajo/agile7:${REF}
+    networks:
+        - "traefik-public"
+    deploy:
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.${REF}.rule=Host(`${REF}.kahli.eu`)"
+        - "traefik.http.routers.${REF}.entrypoints=websecure"
+        - "traefik.http.routers.${REF}.tls.certresolver=letsencryptresolver"
+        - "traefik.http.services.${REF}.loadbalancer.server.port=8080"
+networks:
+  traefik-public:
+    external: true
